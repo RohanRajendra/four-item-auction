@@ -54,34 +54,77 @@ def solve(bids, A, B, C, D):
     ops = 0
     counts = [A, B, C, D]
     names  = ["Artifact", "Balloon", "Crystal", "Diamond"]
+    N = len(bids)
 
-    # pick baseline: type with most slots
-    base = max(range(4), key=lambda i: counts[i])
+    # Bug 1 fix: among types with the max slot count, pick the last one
+    # (deterministic tie-break, avoids baseline being set to a type
+    #  that ties but isn't truly the largest)
+    max_count = max(counts)
+    base = max(i for i in range(4) if counts[i] == max_count)
     types = [i for i in range(4) if i != base]
 
-    # baseline sum
+    # baseline: every bidder starts assigned to base type
     baseline = sum(b[base] for b in bids)
-    ops += len(bids)
+    ops += N
 
-    # one min-heap per non-baseline type: stores (delta, bidder_index)
+    # one min-heap per non-baseline type
     heaps = {t: [] for t in types}
     caps  = {t: counts[t] for t in types}
 
     for i, bid in enumerate(bids):
         for t in types:
             delta = bid[t] - bid[base]
-            ops += 1  # delta computation
-            cap = caps[t]
+            ops += 1
             h = heaps[t]
-            if len(h) < cap:
+            if len(h) < caps[t]:
                 heapq.heappush(h, (delta, i))
                 ops += 1
             elif delta > h[0][0]:
                 heapq.heapreplace(h, (delta, i))
                 ops += 1
 
-    # read out assignments
-    assignment = [names[base]] * len(bids)
+    # Bug 2 fix: resolve conflicts — a bidder may appear in multiple heaps.
+    # For each conflict, evict the bidder from the heap where their delta
+    # is smallest (weakest contribution), replace with next best candidate.
+    changed = True
+    while changed:
+        changed = False
+        # find which bidders are in which heaps
+        membership = {}  # bidder_index -> list of (delta, type)
+        for t in types:
+            for delta, i in heaps[t]:
+                membership.setdefault(i, []).append((delta, t))
+                ops += 1
+
+        for bidder, entries in membership.items():
+            if len(entries) > 1:
+                # keep the heap where this bidder contributes most
+                entries.sort(reverse=True)
+                # evict from all but the best
+                for _, t in entries[1:]:
+                    h = heaps[t]
+                    heaps[t] = [(d, idx) for d, idx in h if idx != bidder]
+                    heapq.heapify(heaps[t])
+                    ops += len(heaps[t])
+                    # try to fill the now-vacant slot with best remaining bidder
+                    assigned = {idx for tt in types for _, idx in heaps[tt]}
+                    assigned.add(bidder)
+                    best_delta, best_idx = None, None
+                    for j, bid in enumerate(bids):
+                        if j in assigned:
+                            continue
+                        d = bid[t] - bid[base]
+                        ops += 1
+                        if best_delta is None or d > best_delta:
+                            best_delta, best_idx = d, j
+                    if best_idx is not None and len(heaps[t]) < caps[t]:
+                        heapq.heappush(heaps[t], (best_delta, best_idx))
+                        ops += 1
+                changed = True
+                break  # restart conflict scan
+
+    # build assignment
+    assignment = [names[base]] * N
     total_delta = 0
     for t in types:
         for delta, i in heaps[t]:
